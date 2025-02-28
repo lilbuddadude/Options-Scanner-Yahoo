@@ -200,9 +200,10 @@ def check_database_status():
 
 # Function to run the scheduled fetch script
 def run_refresh_script():
-    """Run the scheduled_fetch.py script to refresh data"""
+    """Run the data fetch script to refresh data"""
     try:
-        result = subprocess.run(["python", "scheduled_fetch.py"], 
+        import subprocess
+        result = subprocess.run(["python", "yahoo_fetch.py"], 
                                capture_output=True, text=True, check=True)
         
         if result.returncode == 0:
