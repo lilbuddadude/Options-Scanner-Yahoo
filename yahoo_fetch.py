@@ -109,17 +109,108 @@ def fetch_nasdaq100_symbols():
         return []
 
 def fetch_high_volume_stocks():
-    """Fetch high volume stocks from Yahoo Finance"""
+    """Fetch high volume stocks"""
     try:
         logging.info("Fetching high volume stocks...")
-        # This is a very basic approximation - in a real app, you'd use a proper stock screener API
-        high_volume = ["GME", "AMC", "AAPL", "MSFT", "TSLA", "NVDA", "AMD", "PLTR", "COIN", "RBLX", 
-                       "SQ", "PYPL", "LCID", "RIVN", "HOOD", "F", "GM", "BA", "DIS", "NFLX",
-                       "META", "AMZN", "GOOG", "BABA", "JD", "PDD", "NIO", "XPEV", "LI", "UBER"]
+        high_volume = [
+            # Tech stocks
+            "AAPL", "MSFT", "NVDA", "AMD", "INTC", "QCOM", "CSCO", "IBM", "HPQ", "DELL",
+            "META", "AMZN", "GOOG", "NFLX", "TSLA", "PLTR", "SNOW", "CRM", "ADBE", "ORCL",
+            
+            # Finance
+            "BAC", "JPM", "WFC", "C", "GS", "MS", "AXP", "V", "MA", "COF",
+            
+            # Retail
+            "WMT", "TGT", "COST", "HD", "LOW", "AMZN", "EBAY", "ETSY", "BBY", "DG",
+            
+            # Auto
+            "F", "GM", "TSLA", "RIVN", "LCID", "TM", "HMC", "STLA", "NIO", "XPEV",
+            
+            # Energy
+            "XOM", "CVX", "BP", "SHEL", "COP", "EOG", "SLB", "HAL", "OXY", "KMI",
+            
+            # Healthcare
+            "JNJ", "PFE", "MRK", "ABBV", "BMY", "LLY", "AMGN", "GILD", "BIIB", "REGN",
+            
+            # Consumer goods
+            "KO", "PEP", "PG", "CL", "K", "GIS", "CAG", "CPB", "HSY", "KHC",
+            
+            # Meme/High volatility stocks
+            "GME", "AMC", "BB", "BBBY", "WISH", "CLOV", "SPCE", "HOOD", "COIN", "RBLX"
+        ]
         return high_volume
     except Exception as e:
         logging.error(f"Error fetching high volume stocks: {str(e)}")
         return []
+
+def get_ticker_with_retry(symbol, max_retries=3):
+    """Get ticker info with retry logic to handle API failures"""
+    for attempt in range(max_retries):
+        try:
+            ticker = yf.Ticker(symbol)
+            # Try to get some basic info to check if it's working
+            if ticker.info and 'regularMarketPrice' in ticker.info:
+                return ticker
+            time.sleep(1)  # Short delay before retry
+        except Exception as e:
+            logging.debug(f"Attempt {attempt+1} failed for {symbol}: {str(e)}")
+            time.sleep(2)  # Pause between retries
+    
+    # If we get here, all retries failed
+    logging.warning(f"All {max_retries} attempts failed for {symbol}")
+    return None
+
+def validate_stock(symbol):
+    """Check if a stock meets our criteria for options scanning"""
+    try:
+        # Get stock info with retry
+        stock = get_ticker_with_retry(symbol)
+        if not stock:
+            return False
+        
+        # Check if it has options
+        if not stock.options or len(stock.options) == 0:
+            logging.debug(f"{symbol} has no options")
+            return False
+        
+        # Get price and check range
+        info = stock.info
+        if 'regularMarketPrice' not in info:
+            logging.debug(f"{symbol} has no market price")
+            return False
+            
+        price = info['regularMarketPrice']
+        min_price = 5
+        max_price = 200  # Increased max price to allow more stocks
+        
+        if price < min_price or price > max_price:
+            logging.debug(f"{symbol} price ${price} outside range ${min_price}-${max_price}")
+            return False
+            
+        # Make volume check less restrictive
+        if 'volume' in info and info['volume'] < 10000:  # Reduced volume requirement
+            logging.debug(f"{symbol} volume {info.get('volume')} too low")
+            return False
+            
+        logging.info(f"✓ {symbol} validated: price=${price}, has options")
+        return True
+    except Exception as e:
+        logging.debug(f"Error validating {symbol}: {str(e)}")
+        return False
+
+def ensure_minimum_stocks(valid_symbols):
+    """Make sure we have a minimum set of popular optionable stocks"""
+    guaranteed_stocks = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA", "F", "BAC", "T", "INTC", "SPY"]
+    for symbol in guaranteed_stocks:
+        if symbol not in valid_symbols:
+            try:
+                stock = yf.Ticker(symbol)
+                if stock.options and len(stock.options) > 0:
+                    valid_symbols.append(symbol)
+                    logging.info(f"Force-added {symbol} to scan list")
+            except Exception:
+                pass
+    return valid_symbols
 
 def get_optionable_stocks():
     """
@@ -176,47 +267,21 @@ def get_optionable_stocks():
             logging.info("Pausing between batches to avoid rate limiting...")
             time.sleep(5)
     
+    # Make sure we have a minimum set of stocks
+    valid_symbols = ensure_minimum_stocks(valid_symbols)
+    
     logging.info(f"Found {len(valid_symbols)} valid optionable stocks")
     return valid_symbols
-
-def validate_stock(symbol):
-    """Check if a stock meets our criteria for options scanning"""
-    try:
-        # Get stock info
-        stock = yf.Ticker(symbol)
-        
-        # Check if it has options
-        if not stock.options or len(stock.options) == 0:
-            return False
-        
-        # Get price and check range
-        info = stock.info
-        if 'regularMarketPrice' not in info:
-            return False
-            
-        price = info['regularMarketPrice']
-        min_price = 5
-        max_price = 100
-        
-        if price < min_price or price > max_price:
-            return False
-            
-        # Check volume (at least moderate trading activity)
-        if 'volume' in info and info['volume'] < 100000:
-            return False
-            
-        return True
-    except Exception as e:
-        logging.debug(f"Error validating {symbol}: {str(e)}")
-        return False
 
 def fetch_options_for_symbol(symbol, option_type="call"):
     """Fetch options chain for a single symbol"""
     try:
         logging.info(f"Fetching {option_type}s for {symbol}...")
         
-        # Initialize ticker
-        ticker = yf.Ticker(symbol)
+        # Initialize ticker with retry
+        ticker = get_ticker_with_retry(symbol)
+        if not ticker:
+            return []
         
         # Check if we can get a price
         try:
@@ -290,7 +355,7 @@ def fetch_options_for_symbol(symbol, option_type="call"):
                             # Higher delta (probability ITM) as strike gets higher relative to price
                             delta = max(0.01, min(0.99, (strike / current_price) - 0.5))
                     
-                    # Skip if bid or volume is too low
+                    # Skip if bid is too low
                     if bid < 0.05:
                         continue
                         
