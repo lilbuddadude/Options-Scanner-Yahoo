@@ -375,7 +375,7 @@ with st.sidebar:
                 st.session_state.db_last_updated = last_update
                 st.session_state.db_status_message = status_message
                 # Force rerun to update the UI
-                st.experimental_rerun()
+                st.rerun()
             else:
                 st.error(f"❌ {message}")
     
@@ -569,7 +569,7 @@ if 'scan_results' in st.session_state and st.session_state.scan_results is not N
                 st.session_state.sort_ascending = True
             
             # Force rerun to apply sorting
-            st.experimental_rerun()
+            st.rerun()
         
         # Display sortable column headers
         for i, col in enumerate(display_columns):
