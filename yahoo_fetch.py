@@ -5,44 +5,99 @@ import sqlite3
 import logging
 import time
 import os
+import traceback
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Database path
 DB_PATH = 'options_data.db'
 
+def setup_database():
+    """Create SQLite database and tables if they don't exist"""
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        
+        # Create tables
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS options_data (
+            id INTEGER PRIMARY KEY,
+            symbol TEXT,
+            price REAL,
+            exp_date TEXT,
+            strike REAL,
+            option_type TEXT,
+            bid REAL,
+            ask REAL,
+            volume INTEGER,
+            open_interest INTEGER,
+            implied_volatility REAL,
+            delta REAL,
+            timestamp DATETIME
+        )
+        ''')
+        
+        cursor.execute('''
+        CREATE TABLE IF NOT EXISTS data_metadata (
+            id INTEGER PRIMARY KEY,
+            last_updated DATETIME,
+            source TEXT
+        )
+        ''')
+        
+        conn.commit()
+        conn.close()
+        logging.info("Database setup completed successfully")
+        return True
+    except Exception as e:
+        logging.error(f"Database setup error: {str(e)}")
+        return False
+
 def get_optionable_stocks(
     min_price=5, 
-    max_price=100, 
-    min_volume=100000, 
-    min_market_cap=500_000_000
+    max_price=1000,  # Increased max price to capture high-priced stocks
+    min_volume=50000,  # Lowered volume requirement
+    min_market_cap=100_000_000  # Lowered market cap requirement
 ):
     """
     Fetch a comprehensive list of optionable stocks within specified parameters
     """
     optionable_stocks = []
     
-    # Predefined list of stocks to check
+    # Expanded list of stocks to check
     stocks_to_check = [
-        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 
-        'AMD', 'INTC', 'CSCO', 'QCOM', 'F', 'GM', 'BAC', 'WFC'
+        'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'NVDA', 'META', 'TSLA', 'AMD', 'INTC', 
+        'CSCO', 'QCOM', 'F', 'GM', 'BAC', 'WFC', 'JPM', 'XOM', 'CVX', 'PFE',
+        'MRK', 'JNJ', 'UNH', 'HD', 'WMT', 'TGT', 'COST', 'DIS', 'NFLX', 'SMCI',
+        'PYPL', 'SQ', 'COIN', 'SPCE', 'GME', 'AMC', 'PLTR', 'RBLX', 'U', 'ABNB'
     ]
     
     for symbol in stocks_to_check:
         try:
+            logging.info(f"Checking {symbol} for options...")
             # Fetch stock information
             stock = yf.Ticker(symbol)
             info = stock.info
             
-            # Comprehensive checks for stock selection
+            # Check if we got valid info
+            if not info or 'regularMarketPrice' not in info:
+                logging.warning(f"Could not get valid info for {symbol}, skipping")
+                continue
+                
+            # Extract basic metrics
             price = info.get('regularMarketPrice', 0)
             volume = info.get('volume', 0)
             market_cap = info.get('marketCap', 0)
             
+            # Check if stock has options
+            has_options = bool(stock.options)
+            
+            logging.info(f"{symbol}: Price=${price}, Volume={volume}, MarketCap={market_cap}, HasOptions={has_options}")
+            
             # Check if stock meets our criteria
             checks = (
-                stock.options and  # Has options chain
+                has_options and  # Has options chain
                 min_price <= price <= max_price and
                 volume >= min_volume and
                 market_cap >= min_market_cap
@@ -50,11 +105,13 @@ def get_optionable_stocks(
             
             if checks:
                 optionable_stocks.append(symbol)
+                logging.info(f"Added {symbol} to optionable stocks list")
         
         except Exception as e:
             logging.error(f"Error checking {symbol}: {e}")
+            logging.debug(traceback.format_exc())
     
-    logging.info(f"Found {len(optionable_stocks)} optionable stocks")
+    logging.info(f"Found {len(optionable_stocks)} optionable stocks: {optionable_stocks}")
     return optionable_stocks
 
 def fetch_options_data(option_type="covered_call", symbols=None):
@@ -67,13 +124,14 @@ def fetch_options_data(option_type="covered_call", symbols=None):
     if symbols is None:
         symbols = get_optionable_stocks()
     
-    logging.info(f"Fetching {option_type} data for {symbols}")
+    logging.info(f"Fetching {option_type} data for {len(symbols)} symbols")
     
     all_options = []
     option_chain_type = "calls" if option_type == "covered_call" else "puts"
     
     for symbol in symbols:
         try:
+            logging.info(f"Processing {symbol}...")
             # Get ticker info
             ticker = yf.Ticker(symbol)
             current_price = ticker.info.get('regularMarketPrice')
@@ -87,14 +145,23 @@ def fetch_options_data(option_type="covered_call", symbols=None):
                 logging.warning(f"No options data for {symbol}, skipping")
                 continue
                 
-            # Use first 3 expiration dates
-            for date in expirations[:3]:
+            logging.info(f"{symbol} has {len(expirations)} expiration dates")
+            
+            # Use first 3 expiration dates or fewer if less are available
+            for date in expirations[:min(3, len(expirations))]:
                 try:
+                    logging.info(f"Getting {symbol} options for {date}")
                     # Get options chain for date
                     chain = ticker.option_chain(date)
                     
                     # Select calls or puts
                     df = getattr(chain, option_chain_type)
+                    
+                    if df.empty:
+                        logging.warning(f"No {option_chain_type} data for {symbol} on {date}")
+                        continue
+                        
+                    logging.info(f"Found {len(df)} {option_chain_type} for {symbol} on {date}")
                     
                     # Process each option
                     for _, row in df.iterrows():
@@ -124,55 +191,27 @@ def fetch_options_data(option_type="covered_call", symbols=None):
                             "price": current_price,
                             "exp_date": exp_date,
                             "strike": strike,
+                            "option_type": option_type,
                             "bid": bid,
                             "ask": ask,
                             "volume": volume,
-                            "open_int": oi,
-                            "iv_pct": iv,
+                            "open_interest": oi,
+                            "implied_volatility": iv,
                             "delta": delta,
-                            "option_type": option_type
+                            "timestamp": datetime.now()
                         }
                         
                         all_options.append(option_data)
                 
                 except Exception as e:
                     logging.error(f"Error processing {symbol} {date}: {str(e)}")
+                    logging.debug(traceback.format_exc())
         
         except Exception as e:
             logging.error(f"Error fetching data for {symbol}: {str(e)}")
+            logging.debug(traceback.format_exc())
     
     return pd.DataFrame(all_options)
-
-def calculate_metrics(df, option_type):
-    """Calculate trading metrics based on option type"""
-    if df.empty:
-        return df
-        
-    # Calculate days to expiry
-    df['days_to_expiry'] = df['exp_date'].apply(
-        lambda x: max(1, (datetime.strptime(x, "%m/%d/%y") - datetime.now()).days)
-    )
-    
-    if option_type == "covered_call":
-        # Calculate covered call metrics
-        df['moneyness'] = (df['strike'] - df['price']) / df['price'] * 100
-        df['net_profit'] = (df['bid'] * 100) - ((100 * df['price']) - (100 * df['strike']))
-        df['be_bid'] = df['price'] - df['bid']
-        df['be_pct'] = (df['be_bid'] - df['price']) / df['price'] * 100
-        df['otm_prob'] = (1 - df['delta']) * 100
-    else:
-        # Calculate cash-secured put metrics
-        df['moneyness'] = (df['strike'] - df['price']) / df['price'] * 100
-        df['net_profit'] = (df['bid'] * 100) - ((100 * df['strike']) - (100 * df['price']))
-        df['be_bid'] = df['strike'] - df['bid']
-        df['be_pct'] = (df['be_bid'] - df['price']) / df['price'] * 100
-        df['otm_prob'] = df['delta'] * 100
-    
-    # Calculate returns
-    df['pnl_rtn'] = (df['bid'] / df['price']) * 100
-    df['ann_rtn'] = df['pnl_rtn'] * (365 / df['days_to_expiry'])
-    
-    return df
 
 def save_to_database(df, option_type):
     """Save options data to database"""
@@ -191,18 +230,31 @@ def save_to_database(df, option_type):
     count = 0
     
     for _, row in df.iterrows():
-        cursor.execute('''
-        INSERT INTO options_data (
-            symbol, price, exp_date, strike, option_type, 
-            bid, ask, volume, open_interest, implied_volatility, 
-            delta, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            row['symbol'], row['price'], row['exp_date'], row['strike'], option_type,
-            row['bid'], row['ask'], row['volume'], row['open_int'], row['iv_pct'],
-            row['delta'], timestamp
-        ))
-        count += 1
+        try:
+            cursor.execute('''
+            INSERT INTO options_data (
+                symbol, price, exp_date, strike, option_type, 
+                bid, ask, volume, open_interest, implied_volatility, 
+                delta, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                row['symbol'], 
+                row['price'], 
+                row['exp_date'], 
+                row['strike'], 
+                option_type,
+                row['bid'], 
+                row['ask'], 
+                row['volume'], 
+                row['open_interest'], 
+                row['implied_volatility'],
+                row['delta'], 
+                timestamp
+            ))
+            count += 1
+        except Exception as e:
+            logging.error(f"Error inserting record: {e}")
+            logging.debug(f"Problematic row: {row}")
     
     # Update metadata
     cursor.execute("DELETE FROM data_metadata WHERE source = ?", (option_type,))
@@ -217,25 +269,37 @@ def save_to_database(df, option_type):
 def main():
     """Main function to fetch and save options data"""
     try:
+        # Setup database first
+        setup_database()
+        
         # Fetch optionable stocks
         optionable_stocks = get_optionable_stocks()
         
+        if not optionable_stocks:
+            logging.error("No optionable stocks found, cannot proceed")
+            return 1
+            
         # Process covered calls
         logging.info("Fetching covered call data...")
         cc_data = fetch_options_data("covered_call", optionable_stocks)
-        cc_data = calculate_metrics(cc_data, "covered_call")
-        save_to_database(cc_data, "covered_call")
+        if not cc_data.empty:
+            save_to_database(cc_data, "covered_call")
+        else:
+            logging.warning("No covered call data found")
         
         # Process cash secured puts
         logging.info("Fetching cash secured put data...")
         csp_data = fetch_options_data("cash_secured_put", optionable_stocks)
-        csp_data = calculate_metrics(csp_data, "cash_secured_put")
-        save_to_database(csp_data, "cash_secured_put")
+        if not csp_data.empty:
+            save_to_database(csp_data, "cash_secured_put")
+        else:
+            logging.warning("No cash secured put data found")
         
         logging.info("Data refresh complete!")
         
     except Exception as e:
         logging.error(f"Error in main process: {str(e)}")
+        logging.debug(traceback.format_exc())
         return 1
         
     return 0
