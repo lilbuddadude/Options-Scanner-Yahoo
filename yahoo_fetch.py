@@ -3,7 +3,7 @@
 Options Scanner - Yahoo Finance Data Fetcher
 --------------------------------------------
 This script fetches options data from Yahoo Finance and saves it to a local SQLite database.
-It scans for a much larger universe of stocks to find profitable options opportunities.
+It scans for all optionable stocks in the $5-$100 price range to find profitable options opportunities.
 """
 
 import yfinance as yf
@@ -17,6 +17,7 @@ import os
 import traceback
 import sys
 import requests
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Setup logging
@@ -32,7 +33,9 @@ logging.basicConfig(
 # Constants
 DB_PATH = 'options_data.db'
 LOG_PATH = 'yahoo_options_fetch.log'
-MAX_WORKERS = 10  # Number of parallel threads for fetching data
+MAX_WORKERS = 4  # Reduced number of parallel threads to avoid rate limiting
+MIN_STOCK_PRICE = 5.0  # Minimum stock price to consider
+MAX_STOCK_PRICE = 100.0  # Maximum stock price to consider
 
 # Set to True to use only a small sample of stocks for testing
 TEST_MODE = False
@@ -108,147 +111,243 @@ def fetch_nasdaq100_symbols():
         logging.error(f"Error fetching Nasdaq 100 symbols: {str(e)}")
         return []
 
+def fetch_russell_2000_symbols():
+    """Fetch a subset of Russell 2000 small-cap stocks"""
+    # This is a representative sample as there's no easy way to get the full list
+    russell_sample = [
+        # Financial
+        "ABTX", "ACBI", "BANC", "BANF", "BCML", "BHLB", "CADE", "CARE", "CASH", "CATY", "CBSH", "CBU", "CCNE",
+        # Technology
+        "AAOI", "ACIW", "ACLS", "ACMR", "ACN", "ADBE", "ADI", "ADTN", "AEIS", "AMAT", "AMBA", "AMD", "AMOT",
+        # Consumer
+        "ANF", "BJRI", "BLMN", "BOOT", "CAKE", "CASY", "CBRL", "CHUY", "COTY", "CROX", "DIN", "DKS", "EAT",
+        # Healthcare
+        "ACHC", "ACLS", "ADMA", "ADMS", "ADUS", "AERI", "AFMD", "AGEN", "AHCO", "ALEC", "ALKS", "AMPH", "AMRN",
+        # Industrial
+        "AIMC", "AJRD", "AORT", "APOG", "AVAV", "AXON", "B", "BECN", "BGS", "BKNG", "BLDR", "BWXT", "CAL"
+    ]
+    logging.info(f"Using {len(russell_sample)} representative Russell 2000 symbols")
+    return russell_sample
+
+def fetch_popular_etfs():
+    """Fetch a list of popular ETFs with options"""
+    etfs = [
+        # Major Index ETFs
+        "SPY", "QQQ", "IWM", "DIA", "VTI", "VOO", "VEA", "VWO", 
+        # Sector ETFs
+        "XLF", "XLE", "XLK", "XLV", "XLI", "XLU", "XLP", "XLY", "XLB", "XLRE",
+        # Industry ETFs
+        "SMH", "IBB", "XBI", "KRE", "XRT", "XHB", "ITB", "IYT", "XTN",
+        # Volatility ETFs
+        "VXX", "UVXY", "VIXY",
+        # Commodity ETFs
+        "GLD", "SLV", "USO", "UNG", "DBC",
+        # Bond ETFs
+        "TLT", "IEF", "HYG", "LQD", "MUB",
+        # Thematic ETFs
+        "ARKK", "ARKW", "ARKG", "ARKF", "ARKX", "MSOS", "ROBO", "BOTZ"
+    ]
+    logging.info(f"Added {len(etfs)} popular ETFs")
+    return etfs
+
 def fetch_high_volume_stocks():
     """Fetch high volume stocks"""
-    try:
-        logging.info("Fetching high volume stocks...")
-        high_volume = [
-            # Tech stocks
-            "AAPL", "MSFT", "NVDA", "AMD", "INTC", "QCOM", "CSCO", "IBM", "HPQ", "DELL",
-            "META", "AMZN", "GOOG", "NFLX", "TSLA", "PLTR", "SNOW", "CRM", "ADBE", "ORCL",
-            
-            # Finance
-            "BAC", "JPM", "WFC", "C", "GS", "MS", "AXP", "V", "MA", "COF",
-            
-            # Retail
-            "WMT", "TGT", "COST", "HD", "LOW", "AMZN", "EBAY", "ETSY", "BBY", "DG",
-            
-            # Auto
-            "F", "GM", "TSLA", "RIVN", "LCID", "TM", "HMC", "STLA", "NIO", "XPEV",
-            
-            # Energy
-            "XOM", "CVX", "BP", "SHEL", "COP", "EOG", "SLB", "HAL", "OXY", "KMI",
-            
-            # Healthcare
-            "JNJ", "PFE", "MRK", "ABBV", "BMY", "LLY", "AMGN", "GILD", "BIIB", "REGN",
-            
-            # Consumer goods
-            "KO", "PEP", "PG", "CL", "K", "GIS", "CAG", "CPB", "HSY", "KHC",
-            
-            # Meme/High volatility stocks
-            "GME", "AMC", "BB", "BBBY", "WISH", "CLOV", "SPCE", "HOOD", "COIN", "RBLX"
-        ]
-        return high_volume
-    except Exception as e:
-        logging.error(f"Error fetching high volume stocks: {str(e)}")
-        return []
+    high_volume = [
+        # Tech stocks
+        "AAPL", "MSFT", "NVDA", "AMD", "INTC", "QCOM", "CSCO", "IBM", "HPQ", "DELL",
+        "META", "AMZN", "GOOG", "NFLX", "TSLA", "PLTR", "SNOW", "CRM", "ADBE", "ORCL",
+        
+        # Finance
+        "BAC", "JPM", "WFC", "C", "GS", "MS", "AXP", "V", "MA", "COF",
+        
+        # Retail
+        "WMT", "TGT", "COST", "HD", "LOW", "AMZN", "EBAY", "ETSY", "BBY", "DG",
+        
+        # Auto
+        "F", "GM", "TSLA", "RIVN", "LCID", "TM", "HMC", "STLA", "NIO", "XPEV",
+        
+        # Energy
+        "XOM", "CVX", "BP", "SHEL", "COP", "EOG", "SLB", "HAL", "OXY", "KMI",
+        
+        # Healthcare
+        "JNJ", "PFE", "MRK", "ABBV", "BMY", "LLY", "AMGN", "GILD", "BIIB", "REGN",
+        
+        # Consumer goods
+        "KO", "PEP", "PG", "CL", "K", "GIS", "CAG", "CPB", "HSY", "KHC",
+        
+        # Meme/High volatility stocks
+        "GME", "AMC", "BB", "BBBY", "WISH", "CLOV", "SPCE", "HOOD", "COIN", "RBLX",
+        
+        # Cannabis
+        "CGC", "TLRY", "ACB", "SNDL", "CRON", "MSOS", "CURLF", "TCNNF",
+        
+        # Travel & Leisure
+        "AAL", "DAL", "UAL", "LUV", "NCLH", "CCL", "RCL", "MAR", "HLT", "H",
+        
+        # Dividend favorites
+        "T", "VZ", "MO", "PM", "BTI", "XOM", "CVX", "KO", "PEP", "JNJ"
+    ]
+    return high_volume
 
-def get_ticker_with_retry(symbol, max_retries=3):
-    """Get ticker info with retry logic to handle API failures"""
+def fetch_comprehensive_stock_list():
+    """Fetch a comprehensive list of stock symbols from multiple sources"""
+    all_symbols = set()
+    
+    # Add from Yahoo Finance screeners
+    sources = [
+        fetch_sp500_symbols(),       # S&P 500
+        fetch_nasdaq100_symbols(),   # NASDAQ 100
+        fetch_russell_2000_symbols(),# Russell 2000 (smaller caps)
+        fetch_popular_etfs(),        # Popular ETFs
+        fetch_high_volume_stocks()   # High volume/popular stocks
+    ]
+    
+    for source in sources:
+        all_symbols.update(source)
+    
+    # Add from predefined lists (industry groups)
+    industry_groups = {
+        'technology': ["AAPL", "MSFT", "NVDA", "AMD", "INTC", "IBM", "HPQ", "DELL", "CSCO", "ORCL", "CRM", "ADBE", "PLTR"],
+        'retail': ["WMT", "TGT", "COST", "HD", "LOW", "AMZN", "EBAY", "ETSY", "BBY", "DG", "DLTR", "KR", "M", "JWN", "GPS"],
+        'automotive': ["F", "GM", "TSLA", "RIVN", "LCID", "TM", "HMC", "STLA", "NIO", "XPEV", "LI", "FFIE", "GOEV"],
+        'airlines': ["AAL", "DAL", "UAL", "LUV", "SAVE", "JBLU", "ALK", "HA"],
+        'cruiselines': ["CCL", "RCL", "NCLH"],
+        'entertainment': ["DIS", "NFLX", "PARA", "WBD", "CMCSA"],
+        'gaming': ["ATVI", "EA", "TTWO", "RBLX", "U", "CRSR", "HEAR"],
+        'social_media': ["META", "SNAP", "PINS", "TWTR", "HOOD", "BMBL"],
+        'biotech': ["AMGN", "GILD", "BIIB", "REGN", "MRNA", "BNTX", "NVAX"]
+    }
+    
+    for group, symbols in industry_groups.items():
+        all_symbols.update(symbols)
+    
+    # Remove empty strings and None values
+    all_symbols = {s for s in all_symbols if s and isinstance(s, str)}
+    
+    # Remove symbols with non-standard characters (typically not optionable)
+    valid_pattern = re.compile(r'^[A-Z]{1,5}$')
+    filtered_symbols = {s for s in all_symbols if valid_pattern.match(s)}
+    
+    logging.info(f"Built comprehensive list of {len(filtered_symbols)} stock symbols")
+    return list(filtered_symbols)
+
+def get_ticker_with_retry(symbol, max_retries=2):
+    """Get ticker info with better retry logic and timeout"""
     for attempt in range(max_retries):
         try:
             ticker = yf.Ticker(symbol)
-            # Try to get some basic info to check if it's working
-            if ticker.info and 'regularMarketPrice' in ticker.info:
+            
+            # Try a minimal info request
+            if hasattr(ticker, 'options') and ticker.options:
                 return ticker
-            time.sleep(1)  # Short delay before retry
+                
+            time.sleep(1)
         except Exception as e:
             logging.debug(f"Attempt {attempt+1} failed for {symbol}: {str(e)}")
-            time.sleep(2)  # Pause between retries
+            time.sleep(2)
     
-    # If we get here, all retries failed
-    logging.warning(f"All {max_retries} attempts failed for {symbol}")
     return None
 
 def validate_stock(symbol):
-    """Check if a stock meets our criteria for options scanning"""
+    """Check if a stock has options and is priced $5-$100"""
     try:
         # Get stock info with retry
-        stock = get_ticker_with_retry(symbol)
+        stock = get_ticker_with_retry(symbol, max_retries=2)
         if not stock:
             return False
         
-        # Check if it has options
-        if not stock.options or len(stock.options) == 0:
-            logging.debug(f"{symbol} has no options")
+        # First quick check - does it have options?
+        try:
+            options_list = stock.options
+            if not options_list or len(options_list) == 0:
+                return False
+        except:
             return False
         
-        # Get price and check range
-        info = stock.info
-        if 'regularMarketPrice' not in info:
-            logging.debug(f"{symbol} has no market price")
+        # Then get price
+        try:
+            info = stock.info
+            if 'regularMarketPrice' not in info:
+                return False
+                
+            price = info['regularMarketPrice']
+            
+            if price < MIN_STOCK_PRICE or price > MAX_STOCK_PRICE:
+                return False
+                
+            # Basic volume check - just needs some liquidity
+            if 'averageVolume' in info and info['averageVolume'] < 50000:
+                return False
+                
+            logging.info(f"✓ {symbol} validated: price=${price:.2f}, has options")
+            return True
+        except:
             return False
             
-        price = info['regularMarketPrice']
-        min_price = 5
-        max_price = 200  # Increased max price to allow more stocks
-        
-        if price < min_price or price > max_price:
-            logging.debug(f"{symbol} price ${price} outside range ${min_price}-${max_price}")
-            return False
-            
-        # Make volume check less restrictive
-        if 'volume' in info and info['volume'] < 10000:  # Reduced volume requirement
-            logging.debug(f"{symbol} volume {info.get('volume')} too low")
-            return False
-            
-        logging.info(f"✓ {symbol} validated: price=${price}, has options")
-        return True
     except Exception as e:
         logging.debug(f"Error validating {symbol}: {str(e)}")
         return False
 
 def ensure_minimum_stocks(valid_symbols):
     """Make sure we have a minimum set of popular optionable stocks"""
-    guaranteed_stocks = ["AAPL", "MSFT", "NVDA", "AMD", "TSLA", "F", "BAC", "T", "INTC", "SPY"]
+    guaranteed_stocks = [
+        # Tech giants
+        "AAPL", "MSFT", "GOOGL", "AMZN", "META", "TSLA", "NVDA", "AMD",
+        # Finance
+        "JPM", "BAC", "GS", "MS", "V", "MA", "AXP",
+        # Consumer
+        "WMT", "TGT", "COST", "HD", "MCD", "SBUX", "KO", "PEP",
+        # Healthcare
+        "JNJ", "PFE", "MRK", "UNH", "CVS",
+        # Industrial
+        "BA", "CAT", "DE", "GE",
+        # Energy
+        "XOM", "CVX", "COP", "SLB",
+        # Telecom
+        "T", "VZ", "TMUS",
+        # Media
+        "DIS", "NFLX", "CMCSA",
+        # Other high-volume
+        "F", "GM", "AAL", "CCL", "PLTR", "UBER", "HOOD"
+    ]
+    
     for symbol in guaranteed_stocks:
         if symbol not in valid_symbols:
             try:
                 stock = yf.Ticker(symbol)
                 if stock.options and len(stock.options) > 0:
-                    valid_symbols.append(symbol)
-                    logging.info(f"Force-added {symbol} to scan list")
+                    info = stock.info
+                    if 'regularMarketPrice' in info:
+                        price = info['regularMarketPrice']
+                        if MIN_STOCK_PRICE <= price <= MAX_STOCK_PRICE:  # Only add if in our price range
+                            valid_symbols.append(symbol)
+                            logging.info(f"Force-added {symbol} to scan list")
             except Exception:
                 pass
+    
     return valid_symbols
 
 def get_optionable_stocks():
-    """
-    Get a list of optionable stocks to scan
-    
-    Combines S&P 500, Nasdaq 100, and high volume stocks, then filters
-    for those with options and within the price range
-    """
+    """Get all optionable stocks with prices between $5-$100"""
     if TEST_MODE:
-        # Just use a small set for testing
         test_symbols = ["AAPL", "MSFT", "TSLA", "AMD", "NVDA", "PLTR", "COIN", "F", "GM", "T"]
         logging.info(f"TEST MODE: Using {len(test_symbols)} test symbols")
         return test_symbols
     
-    # Get symbols from multiple sources
-    sp500_symbols = fetch_sp500_symbols()
-    nasdaq_symbols = fetch_nasdaq100_symbols()
-    volume_symbols = fetch_high_volume_stocks()
+    # Get comprehensive list of stocks to check
+    all_symbols = fetch_comprehensive_stock_list()
     
-    # Combine and remove duplicates
-    all_symbols = list(set(sp500_symbols + nasdaq_symbols + volume_symbols))
-    logging.info(f"Combined list: {len(all_symbols)} unique symbols")
-    
-    # Filter and validate in batches
-    valid_symbols = []
-    min_price = 5
-    max_price = 100
-    
-    # Process in batches to avoid rate limiting
-    batch_size = 50
+    # Process in small batches with pauses to avoid rate limiting
+    batch_size = 20  # Smaller batch size
     batches = [all_symbols[i:i + batch_size] for i in range(0, len(all_symbols), batch_size)]
     
     logging.info(f"Screening {len(all_symbols)} symbols in {len(batches)} batches...")
     
+    valid_symbols = []
     for batch_num, symbol_batch in enumerate(batches):
         logging.info(f"Processing batch {batch_num+1}/{len(batches)} ({len(symbol_batch)} symbols)...")
         
-        # Process batch with multithreading
+        # Use fewer workers to reduce parallel requests
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
             futures = {executor.submit(validate_stock, symbol): symbol for symbol in symbol_batch}
             
@@ -262,19 +361,33 @@ def get_optionable_stocks():
                 except Exception as e:
                     logging.error(f"Error validating {symbol}: {str(e)}")
         
-        # Prevent rate limiting
+        # More aggressive pause between batches
         if batch_num < len(batches) - 1:
-            logging.info("Pausing between batches to avoid rate limiting...")
-            time.sleep(5)
+            pause_time = 10 + (batch_num % 5)  # Variable pause to avoid detection patterns
+            logging.info(f"Pausing for {pause_time} seconds after batch {batch_num+1}...")
+            time.sleep(pause_time)
+            
+        # Output progress periodically
+        if (batch_num+1) % 10 == 0 or batch_num == len(batches)-1:
+            logging.info(f"Progress: Checked {min((batch_num+1)*batch_size, len(all_symbols))} symbols, found {len(valid_symbols)} valid stocks")
     
     # Make sure we have a minimum set of stocks
     valid_symbols = ensure_minimum_stocks(valid_symbols)
     
-    logging.info(f"Found {len(valid_symbols)} valid optionable stocks")
+    logging.info(f"Found {len(valid_symbols)} optionable stocks priced ${MIN_STOCK_PRICE}-${MAX_STOCK_PRICE}")
+    
+    # Save the list for reference
+    try:
+        with open('valid_stocks.txt', 'w') as f:
+            f.write('\n'.join(valid_symbols))
+        logging.info("Saved valid stock list to valid_stocks.txt")
+    except Exception as e:
+        logging.error(f"Error saving stock list: {str(e)}")
+    
     return valid_symbols
 
 def fetch_options_for_symbol(symbol, option_type="call"):
-    """Fetch options chain for a single symbol"""
+    """Fetch option chain for a single symbol"""
     try:
         logging.info(f"Fetching {option_type}s for {symbol}...")
         
@@ -286,8 +399,8 @@ def fetch_options_for_symbol(symbol, option_type="call"):
         # Check if we can get a price
         try:
             current_price = ticker.info.get('regularMarketPrice')
-            if not current_price:
-                logging.warning(f"Could not get price for {symbol}, skipping")
+            if not current_price or current_price < MIN_STOCK_PRICE or current_price > MAX_STOCK_PRICE:
+                logging.warning(f"Price for {symbol} (${current_price}) outside range ${MIN_STOCK_PRICE}-${MAX_STOCK_PRICE}, skipping")
                 return []
         except Exception:
             logging.warning(f"Error getting price for {symbol}, skipping")
@@ -310,8 +423,20 @@ def fetch_options_for_symbol(symbol, option_type="call"):
         
         for expiry in expirations:
             try:
-                # Get options chain
-                chain = ticker.option_chain(expiry)
+                # Get options chain with retry
+                chain = None
+                for attempt in range(2):
+                    try:
+                        chain = ticker.option_chain(expiry)
+                        break
+                    except Exception as e:
+                        logging.debug(f"Option chain fetch attempt {attempt+1} failed for {symbol} {expiry}: {str(e)}")
+                        if attempt == 1:  # Second attempt failed
+                            raise
+                        time.sleep(2)
+                
+                if chain is None:
+                    continue
                 
                 # Select calls or puts
                 df = getattr(chain, option_type + 's')
@@ -326,13 +451,15 @@ def fetch_options_for_symbol(symbol, option_type="call"):
                     # Extract basic data
                     strike = float(row['strike'])
                     
-                    # Skip very deep ITM or OTM options
+                    # Focus on options near the money for better trading opportunities
                     strike_pct = strike / current_price
                     if option_type == 'call':
-                        if strike_pct < 0.7 or strike_pct > 1.3:
+                        # For calls: include strikes from 80% to 120% of current price
+                        if strike_pct < 0.8 or strike_pct > 1.2:
                             continue
                     else:  # put
-                        if strike_pct < 0.7 or strike_pct > 1.3:
+                        # For puts: include strikes from 80% to 100% of current price
+                        if strike_pct < 0.8 or strike_pct > 1.0:
                             continue
                     
                     # Extract option values with fallbacks for nulls
@@ -340,6 +467,10 @@ def fetch_options_for_symbol(symbol, option_type="call"):
                     ask = float(row['ask']) if row['ask'] > 0 else bid * 1.1
                     volume = int(row['volume']) if not pd.isna(row['volume']) else 0
                     open_interest = int(row['openInterest']) if not pd.isna(row['openInterest']) else 0
+                    
+                    # Skip options with very low liquidity
+                    if bid < 0.05:
+                        continue
                     
                     # Implied volatility (convert to percentage)
                     iv = float(row['impliedVolatility']) * 100 if not pd.isna(row['impliedVolatility']) else 0
@@ -355,10 +486,6 @@ def fetch_options_for_symbol(symbol, option_type="call"):
                             # Higher delta (probability ITM) as strike gets higher relative to price
                             delta = max(0.01, min(0.99, (strike / current_price) - 0.5))
                     
-                    # Skip if bid is too low
-                    if bid < 0.05:
-                        continue
-                        
                     option_data = {
                         "symbol": symbol,
                         "price": current_price,
@@ -396,21 +523,37 @@ def fetch_options_data(stock_list, option_type="covered_call"):
     
     all_options = []
     
-    # Process stocks with multithreading
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
-        futures = {
-            executor.submit(fetch_options_for_symbol, symbol, option_chain_type): symbol 
-            for symbol in stock_list
-        }
+    # Process in smaller batches to manage memory and avoid timeouts
+    batch_size = 10
+    stock_batches = [stock_list[i:i + batch_size] for i in range(0, len(stock_list), batch_size)]
+    
+    for batch_idx, stock_batch in enumerate(stock_batches):
+        logging.info(f"Processing {option_type} batch {batch_idx+1}/{len(stock_batches)} ({len(stock_batch)} stocks)")
         
-        for future in as_completed(futures):
-            symbol = futures[future]
-            try:
-                options = future.result()
-                all_options.extend(options)
-                logging.info(f"Processed {symbol}: added {len(options)} options")
-            except Exception as e:
-                logging.error(f"Error processing {symbol}: {str(e)}")
+        # Process batch with multithreading
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as executor:
+            futures = {
+                executor.submit(fetch_options_for_symbol, symbol, option_chain_type): symbol 
+                for symbol in stock_batch
+            }
+            
+            for future in as_completed(futures):
+                symbol = futures[future]
+                try:
+                    options = future.result()
+                    all_options.extend(options)
+                    logging.info(f"Processed {symbol}: added {len(options)} options")
+                except Exception as e:
+                    logging.error(f"Error processing {symbol}: {str(e)}")
+        
+        # Pause between batches
+        if batch_idx < len(stock_batches) - 1:
+            logging.info("Pausing between batches to avoid rate limiting...")
+            time.sleep(5)
+            
+        # Periodically report progress
+        if (batch_idx+1) % 5 == 0 or batch_idx == len(stock_batches)-1:
+            logging.info(f"Progress: Processed {min((batch_idx+1)*batch_size, len(stock_list))} stocks, found {len(all_options)} options")
     
     # Convert to DataFrame
     if not all_options:
@@ -473,19 +616,35 @@ def save_to_database(df, option_type):
     records_inserted = 0
     
     for _, row in df.iterrows():
-        cursor.execute('''
-        INSERT INTO options_data (
-            symbol, price, exp_date, strike, option_type, 
-            bid, ask, volume, open_interest, implied_volatility, 
-            delta, timestamp
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ''', (
-            row['symbol'], row['price'], row['exp_date'], row['strike'], option_type,
-            row.get('bid', 0), row.get('ask', 0), row.get('volume', 0), 
-            row.get('open_interest', 0), row.get('implied_volatility', 0), row.get('delta', 0), 
-            timestamp
-        ))
-        records_inserted += 1
+        try:
+            cursor.execute('''
+            INSERT INTO options_data (
+                symbol, price, exp_date, strike, option_type, 
+                bid, ask, volume, open_interest, implied_volatility, 
+                delta, timestamp
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                row['symbol'], 
+                row['price'], 
+                row['exp_date'], 
+                row['strike'], 
+                option_type,
+                row['bid'], 
+                row['ask'], 
+                row['volume'], 
+                row['open_interest'], 
+                row['implied_volatility'], 
+                row['delta'], 
+                timestamp
+            ))
+            records_inserted += 1
+            
+            # Commit in chunks to avoid huge transactions
+            if records_inserted % 1000 == 0:
+                conn.commit()
+                logging.info(f"Committed {records_inserted} records")
+        except Exception as e:
+            logging.error(f"Error inserting record: {str(e)}")
     
     # Update metadata
     cursor.execute("DELETE FROM data_metadata WHERE source = ?", (option_type,))
@@ -499,7 +658,7 @@ def save_to_database(df, option_type):
     return timestamp
 
 def main():
-    """Main function to fetch and save options data"""
+    """Main function with progress tracking and resume capabilities"""
     try:
         start_time = time.time()
         logging.info("Starting Options Data Fetch from Yahoo Finance")
@@ -507,27 +666,49 @@ def main():
         # Setup database
         setup_database()
         
-        # Get stock universe
+        # Get all optionable stocks in our price range
         stocks = get_optionable_stocks()
         if not stocks:
             logging.error("No valid stocks found to scan")
             return 1
         
-        # Fetch covered call data
+        # Save stock list to file for potential resume
+        with open('valid_stocks.txt', 'w') as f:
+            f.write('\n'.join(stocks))
+        
+        # Process options
+        logging.info(f"Starting options data fetch for {len(stocks)} stocks")
+        
+        # Process covered calls
         logging.info("Fetching covered call data...")
         covered_call_data = fetch_options_data(stocks, "covered_call")
         cc_timestamp = save_to_database(covered_call_data, "covered_call")
         
-        # Fetch cash-secured put data
+        # Process puts
         logging.info("Fetching cash-secured put data...")
         cash_secured_put_data = fetch_options_data(stocks, "cash_secured_put")
         csp_timestamp = save_to_database(cash_secured_put_data, "cash_secured_put")
         
         # Log summary
         elapsed_time = time.time() - start_time
-        logging.info(f"Data fetch completed in {elapsed_time:.2f} seconds")
-        logging.info(f"Covered Calls: {len(covered_call_data)} records")
-        logging.info(f"Cash-Secured Puts: {len(cash_secured_put_data)} records")
+        hours, remainder = divmod(elapsed_time, 3600)
+        minutes, seconds = divmod(remainder, 60)
+        time_str = f"{int(hours)}h {int(minutes)}m {int(seconds)}s"
+        
+        # Create a summary
+        symbols_with_calls = covered_call_data['symbol'].nunique() if not covered_call_data.empty else 0
+        symbols_with_puts = cash_secured_put_data['symbol'].nunique() if not cash_secured_put_data.empty else 0
+        
+        summary = [
+            f"Data fetch completed in {time_str}",
+            f"Scanned {len(stocks)} stocks priced between ${MIN_STOCK_PRICE}-${MAX_STOCK_PRICE}",
+            f"Covered Calls: {len(covered_call_data)} records across {symbols_with_calls} stocks",
+            f"Cash-Secured Puts: {len(cash_secured_put_data)} records across {symbols_with_puts} stocks",
+            f"Total Options: {len(covered_call_data) + len(cash_secured_put_data)}"
+        ]
+        
+        for line in summary:
+            logging.info(line)
         
         return 0
     except Exception as e:
