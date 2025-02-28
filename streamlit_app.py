@@ -567,7 +567,7 @@ if 'scan_results' in st.session_state and st.session_state.scan_results is not N
                 # Set the new sort column and default to ascending
                 st.session_state.sort_column = col_name
                 st.session_state.sort_ascending = True
-            
+    
             # Force rerun to apply sorting
             st.rerun()
         
